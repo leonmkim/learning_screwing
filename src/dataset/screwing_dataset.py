@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation as R
 import yaml
 
 import pandas as pd
-class RosbagDataset(Dataset):
+class ScrewingDataset(Dataset):
     """A Dataset which wraps a RosBag
     Note:
         The dataset can only read data sequentially, and will raise an error when two calls are not consecutives
@@ -23,7 +23,7 @@ class RosbagDataset(Dataset):
         topic_mapping (dict): The mapping topic name to key in the data_dict
     """
 
-    def __init__(self, bag_path, window_size):
+    def __init__(self, bag_path, target_path_pos_ori_list, window_size):
         # self.rosbag = None
 
         ## for now hardcode the main topic and topics of interest...
@@ -36,10 +36,13 @@ class RosbagDataset(Dataset):
         bag = rosbag.Bag(bag_path)
         bag_yaml_str = bag._get_yaml_info()
         self.bag_yaml = yaml.safe_load(bag_yaml_str)
+        # print(self.bag_yaml)
 
-        self.main_topic = 'panda/franka_state_controller_custom/franka_states'
+
+        self.main_topic = '/panda/franka_state_controller_custom/franka_states'
 
         self.main_num_msgs = bag.get_message_count(self.main_topic)
+        # print(self.main_num_msgs)
         # main_topic_window = 100 # number of messages
         
         ## WINDOW SIZE IS THE SAME FOR ALL STREAMS FOR NOW
@@ -60,6 +63,11 @@ class RosbagDataset(Dataset):
             topic = 'K_F_ext_hat_K_' + str(i)
             self.wrench_topics.append(topic)
 
+        self.action_topics = []
+        for i in range(6):
+            topic = 'O_F_EE_d_' + str(i)
+            self.action_topics.append(topic)
+
         # table = b.topic_table
         # self.topic_list = []
         # self.topic_csv_list = []
@@ -68,7 +76,7 @@ class RosbagDataset(Dataset):
             # print(topic)
             # self.topic_list.append(topic)
             self.topic_csv_dict[topic] = self.bagreader.message_by_topic(topic)
-        
+        # print(self.topic_csv_dict)
         ## Read in the target file
         # self.target_paths = 
 
@@ -77,9 +85,11 @@ class RosbagDataset(Dataset):
         #     'O_T_EE' : 
         # }
         
-        # self.label = 
-
         bag.close()
+
+        ## read the label
+        self.target = np.append(np.load(target_path_pos_ori_list[0]), np.load(target_path_pos_ori_list[1]))
+
 
     def __len__(self):
         return self._len
@@ -110,16 +120,17 @@ class RosbagDataset(Dataset):
 
         poses_np = np.array(poses_np)
 
+
+        ##  get actions
+        actions_np = df.loc[start_idx:end_idx, self.action_topics].to_numpy(dtype='float')
+
         ## massage into tensor
         ## (time window) x (batch) x (pose + wrench) 
         ## batches ommitted at this stage so:
         ## (time window) x (pose + wrench) 
-        poses_wrenches_tensor = torch.tensor(np.concatenate((poses_np, wrenches_np), axis=1))
+        poses_wrenches_actions_tensor = torch.tensor(np.concatenate((poses_np, wrenches_np, actions_np), axis=1))
 
-        ## get target
-        ## TODO
-
-        return poses_wrenches_tensor
+        return self.target, poses_wrenches_actions_tensor
 
     def affine_tf_to_pose(self, tf):
         
@@ -134,5 +145,3 @@ class RosbagDataset(Dataset):
         trans = tf_np[0:3, -1]
         pose = np.concatenate((trans, quat))
         return pose
-
-
