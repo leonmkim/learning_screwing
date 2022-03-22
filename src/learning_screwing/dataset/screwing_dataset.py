@@ -38,7 +38,6 @@ class ScrewingDataset(Dataset):
         self.bag_yaml = yaml.safe_load(bag_yaml_str)
         # print(self.bag_yaml)
 
-
         self.main_topic = '/panda/franka_state_controller_custom/franka_states'
 
         self.main_num_msgs = bag.get_message_count(self.main_topic)
@@ -57,7 +56,6 @@ class ScrewingDataset(Dataset):
             topic = 'O_T_EE_' + str(i)
             self.pose_topics.append(topic)
 
-        
         self.wrench_topics = []
         for i in range(6):
             topic = 'K_F_ext_hat_K_' + str(i)
@@ -130,7 +128,7 @@ class ScrewingDataset(Dataset):
         ## (time window) x (pose + wrench) 
         poses_wrenches_actions_tensor = torch.tensor(np.concatenate((poses_np, wrenches_np, actions_np), axis=1))
 
-        return self.target, poses_wrenches_actions_tensor
+        return poses_wrenches_actions_tensor, self.target
 
     def affine_tf_to_pose(self, tf):
         

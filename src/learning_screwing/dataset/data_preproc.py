@@ -27,7 +27,7 @@ bag = rosbag.Bag(bag_path)
 bag_yaml_str = bag._get_yaml_info()
 self.bag_yaml = yaml.safe_load(bag_yaml_str)
 
-self.main_topic = 'panda/franka_state_controller_custom/franka_states'
+self.main_topic = '/panda/franka_state_controller_custom/franka_states'
 
 self.main_num_msgs = bag.get_message_count(self.main_topic)
 # main_topic_window = 100 # number of messages
