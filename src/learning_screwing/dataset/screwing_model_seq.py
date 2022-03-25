@@ -1,10 +1,10 @@
 import torch.nn as nn
 import torch
 
-class ScrewingModel(nn.Module):
+class ScrewingModelSeq(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
-        super(ScrewingModel, self).__init__()
+        super(ScrewingModelSeq, self).__init__()
         self.hidden_dim = hidden_dim
 
         # The LSTM takes word embeddings as inputs, and outputs hidden states
@@ -25,5 +25,6 @@ class ScrewingModel(nn.Module):
         output = output_T.float()
         
         # just use the last element in the output sequence 
-        return output[:, -1, :]
+        # return output[:, -1, :]
+        return output
 
