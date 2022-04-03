@@ -1,0 +1,49 @@
+train_eval_shared:
+  window_size: 80
+  overlapping: True
+
+  input_dim: 19
+  hidden_dim: 10
+  num_layers: 3
+  output_dim: 5
+
+  #TODO change arbitrary weight
+  ori_rel_weight: 2
+
+  num_eps: 500
+
+  chckpnt_epoch_interval: 20
+
+  base_dset_dir: '~/datasets/screwing/'
+  xprmnt_dir: "2022-03-10_23-17-39/"
+
+# "2022-03-11_17-07-13/"
+# '2022-03-12_19-53-05/'
+
+  train_ratio: .75
+  
+  peg_rad: 0.0127
+  rad_tol: 0.0008
+
+  model_save_dir: '../../../models/'
+
+  peg length: .111125
+  hole inner radius: 0.0135
+  hole outer radius: .03
+  hole height: .12
+
+  loss: 'weighted summed SE'
+  num_workers: 8
+
+  np_seed: 0
+  autom_group_id: True
+  group_id: 'indep_window_models'
+
+train:
+  optimizer: 'Adam'
+
+  batch_size: 128 # Powers of two
+
+  num_epochs: 100
+  learning_rate: 0.003
+  log_interval: 10
