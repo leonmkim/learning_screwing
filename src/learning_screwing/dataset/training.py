@@ -11,8 +11,8 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import numpy as np
 
 
-from screwing_model import ScrewingModel
-from screwing_model_seq import ScrewingModelSeq
+from screwing_model import ScrewingModel, ScrewingModelSeq, ScrewingModelGaussian
+# from screwing_model_seq import ScrewingModelSeq
 
 from screwing_dataset import ScrewingDataset 
 
@@ -24,6 +24,7 @@ import time
 import glob
 
 import yaml
+
 def batched_pos_err(estim, target):
     '''
     returns distance error (in m) for each element in the mini-batch
@@ -41,9 +42,9 @@ def batched_ori_err(estim, target, device):
 
     B = estim.size()[0] # batch dimension
 
-    x = torch.cat((estim[:, 3:], torch.ones(B, 1).to(device)), 1) # append 1 to the projection vector
+    x = torch.cat((estim[:, 3:5], torch.ones(B, 1).to(device)), 1) # append 1 to the projection vector
     x_norm = torch.norm(x, 2, 1)
-    y = torch.cat((target[:, 3:], torch.ones(B, 1).to(device)), 1) # append 1 to the projection vector
+    y = torch.cat((target[:, 3:5], torch.ones(B, 1).to(device)), 1) # append 1 to the projection vector
     y_norm = torch.norm(y, 2, 1)
 
     S = 3 
@@ -52,7 +53,9 @@ def batched_ori_err(estim, target, device):
     batched_costheta = batched_inner_prod  / (x_norm * y_norm)
     return torch.acos(batched_costheta)
 
-def weighted_MSE_loss(estim, target, ori_weight):
+def weighted_MSE_loss(estim, target, ori_weight, log_pos_ratio=False):
+    ## averaged over the batch size
+    
     SE_out = (estim - target)**2
     # print(torch.mean(SE_out))
     # print(torch.sum(SE_out)/torch.numel(input))
@@ -61,43 +64,84 @@ def weighted_MSE_loss(estim, target, ori_weight):
     ori_SE = SE_out[:, 3:]
     # print((torch.sum(pos_SE) + torch.sum(ori_SE))/torch.numel(input))
     # weighted_mean = (torch.sum(pos_SE) + ori_weight*torch.sum(ori_SE))/torch.numel(SE_out)
-    weighted_sum = (torch.sum(pos_SE) + ori_weight*torch.sum(ori_SE))/len(SE_out) #divide only by size of batch, but not also over elements of the output
+
+    pos_sum_SE = torch.sum(pos_SE)
+    ori_sum_SE = torch.sum(ori_SE)
+    weighted_sum = (pos_sum_SE + ori_weight*ori_sum_SE) 
     # weighted_sum = torch.sum(pos_SE) + ori_weight*torch.sum(ori_SE)
-    return weighted_sum
+
+    pos_loss_ratio = pos_sum_SE / weighted_sum
+
+    #divide weighted sum only by size of batch, but not also over elements of the output
+    if log_pos_ratio:
+        return weighted_sum/len(SE_out), pos_loss_ratio
+    else:
+        return weighted_sum/len(SE_out)
     # return torch.sum(torch.mul(weighting, MSE_out))
     # return torch.sum(MSE_out)
 
+def GNLL_loss(estim, var, target, ori_weight, log_pos_ratio=False):
+    '''
+    estim: N, 5
+    var: N, 5
+    target: N, 5
+    ori_weight: scal
+
+    '''
+    B = estim.size()[0] # batch dimension    
+    GNLL_loss = nn.GaussianNLLLoss(full = True, reduction='none')
+    
+    loss = GNLL_loss(estim, target, var)
+
+    pos_GNLL = torch.sum(loss[:, :3])
+    ori_GNLL = torch.sum(loss[:, 3:])
+    # weighted loss over the sum of the output dimensions 
+    # averaged over the batch 
+    weighted_loss = (pos_GNLL + ori_weight*ori_GNLL)
+    
+    if log_pos_ratio:
+        return (weighted_loss/B), (pos_GNLL / weighted_loss)
+    else:
+        return weighted_loss/B
+
 ## TODO output a variance/R2 score metric somewhere to eval against baseline performance
 
-def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, train_loader, val_loader, model_save_dir, run_name, log_interval, chkpnt_epoch_interval): #TODO add early stopping criterion
-    logging_step = 0
+def training_loop(gaussian_model, model, optimizer, epoch, num_epochs, ori_rel_weight, seq_length, train_loader, val_loader, model_save_path, run_name, log_interval, chkpnt_epoch_interval, logging_step = 0): #TODO add early stopping criterion
+    # logging_step = 0
     # quantiles of interest: median and 95% CI
     q = torch.as_tensor([0.025, 0.5, 0.975]).to(device) 
     q_timing = torch.as_tensor([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]).to(device)
     seq_length = seq_length
 
-    for epoch in range(num_epochs):
-        for batch_idx,(x,y, _, _) in enumerate(train_loader):
+    # GNLL_loss = nn.GaussianNLLLoss(full=True, reduction='sum')
+
+    model.train()
+
+    while epoch < num_epochs:
+        for batch_idx, return_dict in enumerate(train_loader): #(x,y, _, _)
             optimizer.zero_grad()
 
             seq_pos_error, seq_ori_error, seq_loss = [], [], []
 
-            x = x.to(device)
-            y = y.float().to(device)
+            x = return_dict['poses_wrenches_actions_tensor'].to(device)
+            y = return_dict['target'].float().to(device)
 
             # Forward propogation happens here
             output = model(x).to(device) 
             # seq_length = outputs.size()[1]
             # last_output = outputs[:, -1, :]
 
-            
             if batch_idx % log_interval == 0:
                 ## statistical metrics from the test evaluations
                 wandb.log({
                 'epoch': epoch,
                 'train batch_idx': batch_idx}, step=logging_step)
 
-                train_loss = weighted_MSE_loss(output, y, ori_rel_weight) 
+                if gaussian_model:
+                    # outputs, target, variances of outputs
+                    train_loss, pos_loss_ratio = GNLL_loss(output[:, :5], output[:, 5:], y, ori_rel_weight, log_pos_ratio=True)
+                else:
+                    train_loss, pos_loss_ratio = weighted_MSE_loss(output, y, ori_rel_weight, log_pos_ratio=True) 
 
                 batch_pos_err = batched_pos_err(output, y)
                 batch_ori_err = batched_ori_err(output, y, device)
@@ -122,6 +166,7 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
             
                 wandb.log({ 
                 'train_loss': train_loss,
+                'train_pos_loss_ratio': pos_loss_ratio,
                 'train_pos_err_mean' : pos_err_mean,
                 'train_pos_err_std' : pos_err_std,
                 'train_pos_err_max' : pos_err_max,
@@ -138,7 +183,6 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
                 'train_ori_err_95_upper' : ori_err_95_median[2].item(),
                 }, step=logging_step)
             
-
                 train_loss.backward()
                 optimizer.step()
 
@@ -154,21 +198,30 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
             wandb.log({'epoch': epoch, 
             }, step = logging_step-1)
 
-            total_valid_pos_error, total_valid_ori_error, total_valid_loss = [], [], []
-            for batch_idx,(x,y, _, _) in enumerate(val_loader):
-
-                x = x.to(device)
-                y = y.float().to(device)
-
+            total_valid_pos_error, total_valid_ori_error, total_valid_loss, total_valid_pos_loss_ratio = [], [], [], []
+            # for batch_idx,(x,y, _, _) in enumerate(val_loader):
+            for batch_idx, return_dict in enumerate(val_loader): 
+                # x = x.to(device)
+                # y = y.float().to(device)
+                x = return_dict['poses_wrenches_actions_tensor'].to(device)
+                y = return_dict['target'].float().to(device)
+                
                 # Forward propogation happens here
                 output = model(x).to(device) 
 
-                loss = weighted_MSE_loss(output, y, ori_rel_weight)
+                if gaussian_model:
+                    # outputs, target, variances of outputs
+                    loss, pos_loss_ratio = GNLL_loss(output[:, :5], output[:, 5:], y, ori_rel_weight, log_pos_ratio=True)
+
+                else:
+                    loss, pos_loss_ratio = weighted_MSE_loss(output, y, ori_rel_weight, log_pos_ratio=True) 
 
                 ## evaluate and append analysis metrics
                 total_valid_ori_error.append(batched_ori_err(output, y, device))
                 total_valid_pos_error.append(batched_pos_err(output, y))
                 total_valid_loss.append(loss)
+
+                total_valid_pos_loss_ratio.append(pos_loss_ratio)
 
                 # if batch_idx % log_interval == 0:
                 #     wandb.log({"loss": loss, 'epoch': epoch, 'batch_idx': batch_idx})
@@ -176,8 +229,12 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
             total_valid_pos_error = torch.cat(total_valid_pos_error).to(device)
             total_valid_ori_error = torch.cat(total_valid_ori_error).to(device)
             total_valid_loss = torch.as_tensor(total_valid_loss).to(device)
+            total_valid_pos_loss_ratio = torch.as_tensor(total_valid_pos_loss_ratio).to(device)
 
             ## statistical metrics from the test evaluations
+            
+            
+            pos_loss_ratio_mean = torch.mean(total_valid_pos_loss_ratio) 
 
             ## pos error
             pos_err_mean = torch.mean(total_valid_pos_error)
@@ -212,6 +269,7 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
             'valid_pos_err_std' : pos_err_std,
             'valid_pos_err_max' : pos_err_max,
             'valid_pos_err_min' : pos_err_min,
+            'valid_pos_loss_ratio_mean' : pos_loss_ratio_mean, 
             'valid_pos_err_95_lower' : pos_err_95_median[0].item(),
             'valid_pos_err_median' : pos_err_95_median[1].item(),
             'valid_pos_err_95_upper' : pos_err_95_median[2].item(),
@@ -245,11 +303,21 @@ def training_loop(model, optimizer, num_epochs, ori_rel_weight, seq_length, trai
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': train_loss,
-            }, model_save_dir+model_name)
+            }, model_save_path+model_name)
+            
+            # wandb.save(model_save_path+model_name)
+        
+        epoch+=1
 
-    return model 
-
-
+    final_state_dict = {
+    'epoch': num_epochs,
+    'model': model,
+    'optimizer': optimizer,
+    'loss': train_loss,
+    'logging_step': logging_step
+    }
+    # return model 
+    return final_state_dict 
 
 if __name__ == '__main__':
     yaml_file = './config.yaml'
@@ -263,23 +331,35 @@ if __name__ == '__main__':
 
     res = {**parsed_yaml['train_eval_shared'], **parsed_yaml['train']}
 
-    run_name = 'train_window_' + str(res['window_size'])
+    run_name = 'train_window_' + str(res['window_size']) + '_ori_rel_weight_' + str(res['ori_rel_weight']) + '_hiddendim_' + str(res['hidden_dim'])
 
     if res['autom_group_id']:
         # slice off the directory slash from xprmnt dir name
-        group_id = res['group_id'] + '_' + res['xprmnt_dir'][:-1] + '_epochs_' + str(res['num_epochs']) + '_numeps_' + str(res['num_eps']) + '_batchsize_' + str(res['batch_size']) 
+        group_id = res['group_id'] + '_' + res['xprmnt_dir'][:-1] + '_numeps_' + str(res['num_eps']) + '_batchsize_' + str(res['batch_size'])  # + '_epochs_' + str(parsed_yaml['train']['num_epochs'])
     else: 
         group_id = res['group_id']
 
-    model_save_dir = res['model_save_dir']
+    model_save_path = res['model_save_path']
     model_dir_name = group_id
 
-    if not os.path.exists(model_save_dir + model_dir_name):
-        os.mkdir(model_save_dir + model_dir_name)
+    if not os.path.exists(model_save_path + model_dir_name):
+        os.mkdir(model_save_path + model_dir_name)
+
+    total_model_save_path = model_save_path + model_dir_name + '/'
 
     # group_id = wandb.util.generate_id()
     #  At the top of your training script, start a new run
-    run = wandb.init(project="screwing_estimation", entity="serialexperimentsleon", group=group_id, job_type='train and validate', name=run_name, config=res)
+    if res['resume_run']:
+        # run = wandb.init(project="screwing_estimation", id=res['resume_run_id'], resume='must')
+        run = wandb.init(project="screwing_estimation", id=res['resume_run_id'], resume='must')
+        wandb.config.update({'num_epochs': res['num_epochs']}, allow_val_change=True)
+
+    else:
+        run = wandb.init(project="screwing_estimation", entity="serialexperimentsleon", group=group_id, job_type='train and validate', name=run_name, config=res)
+    # wandb.config.update({'allow_val_change' : True}) 
+        wandb.config.update({'total_model_save_path': total_model_save_path})
+
+    wandb.config.update({'group_id': group_id}, allow_val_change=True)
 
     # top hole frame
     # Point(x = 0.5545, y = 0, z = 0.5135 - .111 - .01)
@@ -294,40 +374,68 @@ if __name__ == '__main__':
 
     baseline_ori_proj_err = np.tan(baseline_ori_err) * 1.0
 
-    baseline_loss = (baseline_pos_err**2) + run.config['ori_rel_weight'] * (baseline_ori_proj_err**2)
+    if run.config['gaussian_model']:
+        # TODO implement baseline loss for the gaussian NLL loss!!
+        baseline_loss = (baseline_pos_err**2) + run.config['ori_rel_weight'] * (baseline_ori_proj_err**2)
+    else: 
+        baseline_loss = (baseline_pos_err**2) + run.config['ori_rel_weight'] * (baseline_ori_proj_err**2)
 
-    wandb.log({
-        'baseline_ori_err' : baseline_ori_err,
-        'baseline_pos_err' : baseline_pos_err,
-        'peg_radius' : peg_rad,
-        'radius_tol' : rad_tol,
-        'baseline_loss': baseline_loss
-    }, step = 0)
-
+    if not res['resume_run']:
+        wandb.log({
+            'baseline_ori_err' : baseline_ori_err,
+            'baseline_pos_err' : baseline_pos_err,
+            'peg_radius' : peg_rad,
+            'radius_tol' : rad_tol,
+            'baseline_loss': baseline_loss
+        }, step = 0)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # model = ScrewingModel(input_dim, hidden_dim, num_layers, output_dim)
-    model = ScrewingModel(run.config['input_dim'], run.config['hidden_dim'], run.config['num_layers'], run.config['output_dim'])
+    
+    if run.config['gaussian_model']:
+        # double output dimensions for the variances of each output dimension
+        model = ScrewingModelGaussian(run.config['input_dim'], run.config['hidden_dim'], run.config['num_layers'], run.config['output_dim'])
+    else:
+        model = ScrewingModel(run.config['input_dim'], run.config['hidden_dim'], run.config['num_layers'], run.config['output_dim'])
+    
     model = model.to(device)
-      
-    # wandb.watch(model, log_freq=log_interval)
-
-    # net = My_Neural_Network()
-    # net = net.to(device)
-
-    # loss_function = nn.MSELoss(reduction='sum') #alternatively mean the squared error or none ...
+    
     optimizer = optim.Adam(model.parameters(), lr=run.config['learning_rate'])
 
+    if wandb.run.resumed:
+        # checkpoint = torch.load(total_model_save_path + run_name + '_final.pt')
+        checkpoint = torch.load(total_model_save_path + res['resume_model_name'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        loss = checkpoint['loss']
+
+        epoch = checkpoint['epoch']
+        logging_step = checkpoint['logging_step'] + 1
+
+        print('picking up from epoch: ' + str(epoch))
+        print('and logging step: ' + str(logging_step))
+        print('previous loss: ' + str(loss))
+
+    else:     
+        # model = ScrewingModel(input_dim, hidden_dim, num_layers, output_dim)
+
+        # net = My_Neural_Network()
+        # net = net.to(device)
+
+        # loss_function = nn.MSELoss(reduction='sum') #alternatively mean the squared error or none ...
+
+        epoch = 0 
+        logging_step = 0
+
+    # wandb.watch(model, log_freq=log_interval)
 
     base_dset_dir = os.path.expanduser(run.config['base_dset_dir'])
     xprmnt_dir = run.config['xprmnt_dir']
 
     bag_path_names = base_dset_dir + xprmnt_dir + '*.bag' 
 
-    bag_path_list = glob.glob(bag_path_names)
-    total_num_eps = len(bag_path_list)
-    wandb.config.update({'total_dir_eps_num': total_num_eps})
+    # bag_path_list = glob.glob(bag_path_names)
+    # total_num_eps = len(bag_path_list)
+    # wandb.config.update({'total_dir_eps_num': total_num_eps})
 
     ## splitting dsets by bags rather than entire indices
     bag_idxs = np.asarray(range(run.config['num_eps']))
@@ -341,15 +449,29 @@ if __name__ == '__main__':
     for i in train_bag_idxs: # for testing a small number of data
     # for i in range(total_num_eps):
         id_str = str(i)
+        print(i)
         bag_path_names = base_dset_dir + xprmnt_dir + id_str + '_*.bag' 
-        bag_path = glob.glob(bag_path_names)[0]
+        try:
+            bag_path = glob.glob(bag_path_names)[0]
+        except:
+            print('bag with index ' + str(i) + ' was not found! Skipping to next index')
+            continue 
 
         pos_path_name = base_dset_dir + xprmnt_dir + id_str + '_pos.npy'
         proj_ori_path = base_dset_dir + xprmnt_dir + id_str + '_proj_ori.npy'
         pos_ori_path_list = [pos_path_name, proj_ori_path]
-        
-        dset_list.append(ScrewingDataset(bag_path, pos_ori_path_list, run.config['window_size'], overlapping=run.config['overlapping'], load_in_mem=True))
-        
+        # print('about to load bag ' + str(i))
+
+        try:
+            dset_i = ScrewingDataset(bag_path, pos_ori_path_list, run.config['window_size'], overlapping=run.config['overlapping'], load_in_mem=True)
+            if len(dset_i) < 0:
+                print('bag has length < 0!: ' + bag_path)
+            else:
+                dset_list.append(dset_i)
+        except:
+            pass # TODO figure out a way to ensure the desired number of bags are added even if some bags fail to read
+
+        # print(len(dset_list[-1])) 
     train_dset = ConcatDataset(dset_list)
 
     dset_list = []
@@ -357,14 +479,26 @@ if __name__ == '__main__':
     # for i in range(total_num_eps):
         id_str = str(i)
         bag_path_names = base_dset_dir + xprmnt_dir + id_str + '_*.bag' 
-        bag_path = glob.glob(bag_path_names)[0]
+        try:
+            bag_path = glob.glob(bag_path_names)[0]
+        except:
+            print('bag with index ' + str(i) + ' was not found! Skipping to next index')
+            continue 
 
         pos_path_name = base_dset_dir + xprmnt_dir + id_str + '_pos.npy'
         proj_ori_path = base_dset_dir + xprmnt_dir + id_str + '_proj_ori.npy'
         pos_ori_path_list = [pos_path_name, proj_ori_path]
         
-        dset_list.append(ScrewingDataset(bag_path, pos_ori_path_list, run.config['window_size'], overlapping=run.config['overlapping'], load_in_mem=True))
+        try:
+            dset_i = ScrewingDataset(bag_path, pos_ori_path_list, run.config['window_size'], overlapping=run.config['overlapping'], load_in_mem=True)
+            if len(dset_i) < 0:
+                print('bag has length < 0!: ' + bag_path)
+            else:
+                dset_list.append(dset_i)
         
+        except:
+            pass
+
     valid_dset = ConcatDataset(dset_list)
 
     ''' for making one big concat dset and splitting that by indices
@@ -392,10 +526,8 @@ if __name__ == '__main__':
     train_dset, valid_dset = torch.utils.data.random_split(concat_dset, [train_size,length - train_size])
     '''
 
-
     train_dset_length = len(train_dset)
     valid_dset_length = len(valid_dset)
-
 
     wandb.config.update({'train dset num samples': train_dset_length})
     wandb.config.update({'valid dset num samples': valid_dset_length})
@@ -414,25 +546,34 @@ if __name__ == '__main__':
         batch_size=run.config['batch_size']
     )
 
-    model_save_dir = run.config['model_save_dir']
-    model_dir_name = run_name
-
-    
-
-    #model, optimizer, num_epochs, ori_rel_weight, seq_length, train_loader, val_loader, model_save_dir, run_name, log_interval, chkpnt_epoch_interval
-    trained_model = training_loop(model, optimizer, run.config['num_epochs'], 
+    #model, optimizer, num_epochs, ori_rel_weight, seq_length, train_loader, val_loader, model_save_path, run_name, log_interval, chkpnt_epoch_interval
+    # trained_model = training_loop(model, optimizer, run.config['num_epochs'], 
+    trained_dict = training_loop(run.config['gaussian_model'], model, optimizer, epoch, run.config['num_epochs'], 
     run.config['ori_rel_weight'], run.config['window_size'], train_lder, valid_lder, 
-    model_save_dir + model_dir_name, run_name, run.config['log_interval'], run.config['chckpnt_epoch_interval']
+    total_model_save_path, run_name, run.config['log_interval'], run.config['chckpnt_epoch_interval'], logging_step = logging_step
     )
 
-    model_name = run_name + '_final.pt'
-    # model_save_dir = '../../../models/'
+    # model_save_path + model_dir_name + '/' + model_name
+
+    model_name = run_name + '_final' + '_epoch_' + str(res['num_epochs']) + '.pt'
+
+    # model_save_path = '../../../models/'
     # model_name = time.strftime("model_%Y-%m-%d_%H-%M-%S.pt")
     # model_name = '/test_model.pt'
-    torch.save(trained_model.state_dict(), run.config['model_save_dir'] + model_name)
+    # torch.save(trained_model.state_dict(), total_model_save_path + model_name)
 
-    wandb.config.update({'model_name': model_name})
+    torch.save({ # Save our checkpoint loc
+    'epoch':  trained_dict['epoch'],
+    'model_state_dict': trained_dict['model'].state_dict(),
+    'optimizer_state_dict': trained_dict['optimizer'].state_dict(),
+    'loss':  trained_dict['loss'],
+    'logging_step': trained_dict['logging_step']
+    }, total_model_save_path + model_name)
+    # wandb.save(total_model_save_path + model_name) # saves checkpoint to wandb
 
+    # if not res['resume_run']:
+    wandb.config.update({'model_name': model_name}, allow_val_change=True)
+    
     wandb.log({
     'baseline_ori_err' : baseline_ori_err,
     'baseline_pos_err' : baseline_pos_err,

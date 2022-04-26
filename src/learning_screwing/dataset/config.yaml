@@ -1,49 +1,77 @@
 train_eval_shared:
-  window_size: 80
+  window_size: 50
   overlapping: True
 
   input_dim: 19
+  # hidden_dim: 10
   hidden_dim: 10
+  # hidden_dim: 15 # 10
   num_layers: 3
   output_dim: 5
 
-  #TODO change arbitrary weight
-  ori_rel_weight: 2
 
   num_eps: 500
+  # num_eps: 500
 
+  # chckpnt_epoch_interval: 20
   chckpnt_epoch_interval: 20
 
   base_dset_dir: '~/datasets/screwing/'
-  xprmnt_dir: "2022-03-10_23-17-39/"
-
-# "2022-03-11_17-07-13/"
-# '2022-03-12_19-53-05/'
+  # xprmnt_dir: "2022-03-10_23-17-39/"
+  # xprmnt_dir: "2022-04-04_14-40-37/" # generated dataset for bag playback
+  xprmnt_dir: "2022-04-14_15-49-01/" # generated dataset for bag playback with clock time
 
   train_ratio: .75
   
   peg_rad: 0.0127
   rad_tol: 0.0008
 
-  model_save_dir: '../../../models/'
+  model_save_path: '../../../models/'
+  # model_save_dir: '../../../models/'
 
   peg length: .111125
   hole inner radius: 0.0135
   hole outer radius: .03
   hole height: .12
 
-  loss: 'weighted summed SE'
+  # loss: 'weighted summed SE'
+  # loss: 'pos only summed SE'
+  loss: 'weighted GNLL'
+  full_seq_loss: True # whether to penalize the loss at every timestep in the output window 
+
+  # ori_rel_weight: .01 #appropriate weight for the squared sum of residuals loss
+
   num_workers: 8
 
   np_seed: 0
   autom_group_id: True
-  group_id: 'indep_window_models'
+  # group_id: 'ori weighting xprmnt indep windows'
+  group_id: 'gaussian_model'
+  # group_id: 'test_resume'
+
+  gaussian_model: True
 
 train:
+  ori_rel_weight: 3.33 #appropriate weight for the squared sum of residuals loss
+
   optimizer: 'Adam'
 
   batch_size: 128 # Powers of two
 
-  num_epochs: 100
+  num_epochs: 300
+  # num_epochs: 15
   learning_rate: 0.003
   log_interval: 10
+
+  resume_run: False
+  resume_run_id: '2pw0emgk'
+  resume_model_name: 'train_window_50_ori_rel_weight_0.01_final_epoch_10.pt'
+eval:
+  ori_rel_weight: 3.33 #appropriate weight for the squared sum of residuals loss
+
+  batch_size: 1 # Powers of two
+  eval_window_size: 50
+  # eval_model_name: 'train_window_50_ori_rel_weight_0.01_chkpnt_epoch_300.pt' 
+  # eval_model_name: 'train_window_50_ori_rel_weight_1_final_epoch_300.pt' 
+  # eval_model_name: 'train_window_50_ori_rel_weight_10_final_epoch_300.pt' 
+  eval_model_name: 'train_window_50_ori_rel_weight_3.33_final_epoch_300.pt' 

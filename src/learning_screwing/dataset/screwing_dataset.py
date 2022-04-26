@@ -39,18 +39,24 @@ class ScrewingDataset(Dataset):
         # print(self.main_num_msgs)
         # main_topic_window = 100 # number of messages
 
-        self.bagreader = bagreader(bag_path)
+        try:
+            self.bagreader = bagreader(bag_path)
+        except:
+            print('reading bag ' + bag_path + ' failed!')
+            raise 
 
         self.main_topic = '/panda/franka_state_controller_custom/franka_states'
 
         self.total_T = self.bagreader.end_time - self.bagreader.start_time
 
         table = self.bagreader.topic_table
-        self.main_num_msgs = table[table['Topics'] == self.main_topic]['Message Count'][0]
+        self.main_num_msgs = table[table['Topics'] == self.main_topic]['Message Count'].item()
 
         ## WINDOW SIZE IS THE SAME FOR ALL STREAMS FOR NOW
         # max_window = max(list(time_window_dict.values()))
         self.window_size = window_size
+
+        assert self.main_num_msgs >= self.window_size, "number of msgs must be geq window size!" 
 
         self.overlapping = overlapping 
 
@@ -100,6 +106,8 @@ class ScrewingDataset(Dataset):
             ## get features
             self.main_topic_csv = self.topic_csv_dict[self.main_topic] 
             self.df = pd.read_csv(self.main_topic_csv)
+        
+        # print('succesfully loaded bag!')
 
     def __len__(self):
         return self._len
@@ -161,7 +169,9 @@ class ScrewingDataset(Dataset):
             times_np = self.df.loc[start_idx:end_idx, 'Time'].to_numpy(dtype='float')
         
         ## return normalized timestamps for each sample in the input sequence
-        normalized_times_np = (times_np -  self.bagreader.start_time)/ self.total_T
+        # normed_times_np = (times_np -  self.bagreader.start_time)/ self.total_T
+
+        unnormed_times_np = times_np 
 
         ## massage into tensor
         ## (time window) x (batch) x (pose + wrench) 
@@ -169,7 +179,18 @@ class ScrewingDataset(Dataset):
         ## (time window) x (pose + wrench) 
         poses_wrenches_actions_tensor = torch.tensor(np.concatenate((poses_np, wrenches_np, actions_np), axis=1))
 
-        return poses_wrenches_actions_tensor, self.target, normalized_times_np,  self.total_T
+        return_dict = {'poses_wrenches_actions_tensor': poses_wrenches_actions_tensor,
+        'target': self.target,
+        'unnormed_times_np': unnormed_times_np, 
+        'start_time': self.bagreader.start_time,
+        'total_T': self.total_T,
+        'bag_path': self.bag_path,
+        'len_samples': self._len,
+        'idx_accessed': idx
+        }
+
+        # return poses_wrenches_actions_tensor, self.target, normalized_times_np,  self.total_T
+        return return_dict
 
     def affine_tf_to_pose(self, tf):
         
