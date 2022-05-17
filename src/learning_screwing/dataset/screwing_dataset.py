@@ -16,7 +16,7 @@ class ScrewingDataset(Dataset):
     """
 
     """
-
+    # if window_size = -1, produce the full episode !
     def __init__(self, bag_path, target_path_pos_ori_list, window_size, overlapping=True, load_in_mem=False):
         # self.rosbag = None
         self.load_in_mem = load_in_mem
@@ -56,16 +56,20 @@ class ScrewingDataset(Dataset):
         # max_window = max(list(time_window_dict.values()))
         self.window_size = window_size
 
+        assert self.main_num_msgs > 1, "must be at least one number of msgs!" 
         assert self.main_num_msgs >= self.window_size, "number of msgs must be geq window size!" 
 
         self.overlapping = overlapping 
 
-        ## non-overlapping partitioning of the episode
-        if not overlapping:
-            self._len = (self.main_num_msgs // window_size)
-        ## INSTEAD change to overlapping 
+        if self.window_size == -1:
+            self._len = 1
         else:
-            self._len = self.main_num_msgs - window_size + 1
+            ## non-overlapping partitioning of the episode
+            if not overlapping:
+                self._len = (self.main_num_msgs // window_size)
+            ## INSTEAD change to overlapping 
+            else:
+                self._len = self.main_num_msgs - window_size + 1
 
         self.pose_topics = []
         for i in range(16):
@@ -118,12 +122,16 @@ class ScrewingDataset(Dataset):
             raise AssertionError('index out of range')
 
         ## indexing for non-overlapping indexing
-        if not self.overlapping:
-            start_idx = self.window_size * idx
-            end_idx = self.window_size*(idx+1)  - 1
-        else: ## indexing for overlapping indexing
-            start_idx = idx
-            end_idx = idx + self.window_size - 1
+        if self.window_size == -1:
+            start_idx = 0
+            end_idx = self.main_num_msgs - 1
+        else:
+            if not self.overlapping:
+                start_idx = self.window_size * idx
+                end_idx = self.window_size*(idx+1)  - 1
+            else: ## indexing for overlapping indexing
+                start_idx = idx
+                end_idx = idx + self.window_size - 1
 
         if not self.load_in_mem:
             ## get features

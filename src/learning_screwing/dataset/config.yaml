@@ -1,5 +1,5 @@
 train_eval_shared:
-  window_size: 50
+  window_size: 50 #keep this in shared so during eval, you know what the original train batch window was...
   overlapping: True
 
   input_dim: 19
@@ -10,7 +10,9 @@ train_eval_shared:
   output_dim: 5
 
 
+  # num_eps: 500
   num_eps: 500
+  # num_eps: 500
   # num_eps: 500
 
   # chckpnt_epoch_interval: 20
@@ -37,13 +39,12 @@ train_eval_shared:
   # loss: 'weighted summed SE'
   # loss: 'pos only summed SE'
   loss: 'weighted GNLL'
-  full_seq_loss: True # whether to penalize the loss at every timestep in the output window 
 
   # ori_rel_weight: .01 #appropriate weight for the squared sum of residuals loss
 
   num_workers: 8
 
-  np_seed: 0
+  np_seed: 0 # the seed to split the train valid sets
   autom_group_id: True
   # group_id: 'ori weighting xprmnt indep windows'
   group_id: 'gaussian_model'
@@ -52,12 +53,15 @@ train_eval_shared:
   gaussian_model: True
 
 train:
+  debug: True
   ori_rel_weight: 3.33 #appropriate weight for the squared sum of residuals loss
 
   optimizer: 'Adam'
 
-  batch_size: 128 # Powers of two
+  # batch_size: 128 # Powers of two
+  batch_size: 64 # Powers of two
 
+  # num_epochs: 600
   num_epochs: 300
   # num_epochs: 15
   learning_rate: 0.003
@@ -66,12 +70,22 @@ train:
   resume_run: False
   resume_run_id: '2pw0emgk'
   resume_model_name: 'train_window_50_ori_rel_weight_0.01_final_epoch_10.pt'
-eval:
-  ori_rel_weight: 3.33 #appropriate weight for the squared sum of residuals loss
 
+  full_seq_loss: True # whether to penalize the loss at every timestep in the output window 
+
+eval:
+  debug: True 
+  eval_train: True
+  ori_rel_weight: 3.33 #appropriate weight for the squared sum of residuals loss
+  eval_num_eps: 3
   batch_size: 1 # Powers of two
-  eval_window_size: 50
+  eval_window_size: -1
   # eval_model_name: 'train_window_50_ori_rel_weight_0.01_chkpnt_epoch_300.pt' 
   # eval_model_name: 'train_window_50_ori_rel_weight_1_final_epoch_300.pt' 
   # eval_model_name: 'train_window_50_ori_rel_weight_10_final_epoch_300.pt' 
-  eval_model_name: 'train_window_50_ori_rel_weight_3.33_final_epoch_300.pt' 
+  # eval_model_name: 'train_window_50_ori_rel_weight_3.33_final_epoch_300.pt' 
+  # eval_model_name: 'train_window_50_ori_rel_weight_3.33_hiddendim_10_fullseq_chkpnt_epoch_300.pt' 
+  eval_model_name: 'train_window_50_ori_rel_weight_3.33_hiddendim_10_batchsize_32_fullseq_final_epoch_300.pt' 
+  # train_window_50_ori_rel_weight_3.33_hiddendim_10_batchsize_32_fullseq_final_epoch_300
+  full_seq_loss: True # whether to penalize the loss at every timestep in the output window 
+  full_ep_eval: True

@@ -57,7 +57,7 @@ class ScrewingModelSeq(nn.Module):
 
 class ScrewingModelGaussian(nn.Module):
 
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
+    def __init__(self, input_dim, hidden_dim, num_layers, output_dim, full_seq=False):
         super(ScrewingModelGaussian, self).__init__()
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -68,6 +68,8 @@ class ScrewingModelGaussian(nn.Module):
 
         # The linear layer that maps from hidden state space to tag space
         self.hidden2out = nn.Linear(hidden_dim, 2*output_dim)
+        
+        self.full_seq = full_seq
 
     def forward(self, input_T):
         input = input_T.float()
@@ -83,5 +85,8 @@ class ScrewingModelGaussian(nn.Module):
         output[:, :, self.output_dim:] = torch.exp(output[:, :, self.output_dim:])
         
         # just use the last element in the output sequence 
-        return output[:, -1, :] #Batch, Time window, Output dim
+        if self.full_seq:
+            return output #Batch, Time window, Output dim
+        else:
+            return output[:, -1, :] #Batch, Time window, Output dim
 
