@@ -15,7 +15,7 @@ from screwing_model import ScrewingModel, ScrewingModelSeq, ScrewingModelGaussia
 
 from screwing_dataset import ScrewingDataset 
 
-from training import batched_pos_err, batched_ori_err, weighted_MSE_loss, GNLL_loss
+from training import batched_pos_err, batched_ori_err, weighted_MSE_loss, GNLL_loss, batched_pos_err_var, batched_ori_err_var
 
 import wandb
 
@@ -32,7 +32,7 @@ import tqdm
 
 # no need to explicitly pass in if full_seq evaluation or not
 # if model is not full_seq, the dim of output will be 2 anyway
-def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, val_loader): 
+def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, val_loader, wandb_run): 
     # logging_step = 0
     # quantiles of interest: median and 95% CI
     ## switch model to eval
@@ -40,12 +40,15 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
     data = []
     logging_step = 0
 
+    baseline_ori_err = wandb_run.config['baseline_ori_err']
+    baseline_pos_err = wandb_run.config['baseline_pos_err']
 
     with torch.no_grad():
 
         for batch_idx, return_dict in enumerate(val_loader): #(x,y, times, T)
             # x = x.to(device)
             # y = y.float().to(device)
+
             x = return_dict['poses_wrenches_actions_tensor'].to(device)
             y = return_dict['target'].float().to(device) # Batch dim, output dim
             ep_idx = return_dict['bag_path'][0].split('/')[-1].split('_')[0] # extract the episode index number
@@ -70,21 +73,7 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
             time_endpnts = [unnormed_times[0].item(), unnormed_times[-1].item()]
 
             # TODO compute true std for pos and ori
-            
 
-            # if output.dim() == 3:
-            #     full_seq = True
-
-            # output_t = outputs[:, seq_t, :]
-            # normed_times = (unnormed_times - ep_t0) / T
-
-            # normed_t0 = times[:, 0].item() ## take the first normalized time in the input sequence
-            # normed_tf = times[:, seq_t].item() ## take the last normalized time in the input sequence
-            # unnormed_dt = (normed_tf - normed_t0)*T.item() THIS DOESNT SEEM RIGHT. t0 should be the entire episode start, not sample t0
-
-            # if unnormed_times[:, -1].item() > max_unnormed_tf:
-            #     max_unnormed_tf = unnormed_times[:, -1].item()
-            
             if gaussian_model:
                 loss = GNLL_loss(y, output[..., :5], output[..., 5:], ori_rel_weight, eval=True) # N dim tensor
             else:
@@ -93,15 +82,18 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
             ## evaluate and append analysis metrics
             # output is of dim B=1, sequence len, 2*output_dim
             if full_seq:
-                plots, pos_estim_gt_plots, ori_estim_gt_plots = {}, {}, {}
+                plots, pos_estim_gt_plots, ori_estim_gt_plots, pos_estim_err_plots, ori_estim_err_plots = {}, {}, {}, {}, {}
 
-                ori_err = batched_ori_err(output, y, device) #this is a N dim tensor
                 pos_err = batched_pos_err(output, y) #this is a N dim tensor
+                ori_err = batched_ori_err(output, y, device) #this is a N dim tensor
 
                 pos_var_avg = torch.mean(output[..., 5:8], -1).squeeze() #squeeze out the batch dim
                 pos_var_det = torch.prod(output[..., 5:8], -1).squeeze()
                 ori_var_avg = torch.mean(output[..., 8:], -1).squeeze()
                 ori_var_det = torch.prod(output[..., 8:], -1).squeeze()
+
+                pos_err_var = batched_pos_err_var(output, y)
+                ori_err_var = batched_ori_err_var(output, y, device)
                 
                 plots['eval_GNLL'] = {'x': unnormed_times, 'y': loss, 'ep_idx': ep_idx}
                 plots['eval_pos_err'] = {'x': unnormed_times, 'y': pos_err, 'ep_idx': ep_idx}
@@ -111,17 +103,28 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
                 plots['eval_ori_var_avg'] = {'x': unnormed_times, 'y': ori_var_avg, 'ep_idx': ep_idx}
                 plots['eval_ori_var_det'] = {'x': unnormed_times, 'y': ori_var_det, 'ep_idx': ep_idx}
 
-                pos_estim_gt_plots['pos_estim'] = {'x': unnormed_times.tolist(), 'y': pos_estim.tolist(), 'ep_idx': ep_idx}
-                pos_estim_gt_plots['pos_gt'] = {'x': time_endpnts, 'y': [pos_gt, pos_gt], 'ep_idx': ep_idx}
+                pos_estim_err_plots['pos_err'] = {'x': unnormed_times.tolist(), 'y': pos_err.tolist(), 'ep_idx': ep_idx}
+                pos_estim_err_plots['pos_err_baseline'] = {'x': time_endpnts, 'y': [baseline_pos_err, baseline_pos_err], 'ep_idx': ep_idx}
                 # std dev plots
-                pos_estim_gt_plots['pos_plus_estim'] = {'x': unnormed_times.tolist(), 'y': (pos_estim + pos_var_avg).tolist(), 'ep_idx': ep_idx}
-                pos_estim_gt_plots['pos_minus_estim'] = {'x': unnormed_times.tolist(), 'y': (pos_estim - pos_var_avg).tolist(), 'ep_idx': ep_idx}
+                pos_estim_err_plots['pos_plus_err'] = {'x': unnormed_times.tolist(), 'y': (pos_err + pos_err_var).tolist(), 'ep_idx': ep_idx}
+                pos_estim_err_plots['pos_minus_err'] = {'x': unnormed_times.tolist(), 'y': (pos_err - pos_err_var).tolist(), 'ep_idx': ep_idx}
+
+                ori_estim_err_plots['ori_err'] = {'x': unnormed_times.tolist(), 'y': ori_err.tolist(), 'ep_idx': ep_idx}
+                ori_estim_err_plots['ori_err_baseline'] = {'x': time_endpnts, 'y': [baseline_ori_err, baseline_ori_err], 'ep_idx': ep_idx}
+                # std dev plots
+                ori_estim_err_plots['ori_plus_err'] = {'x': unnormed_times.tolist(), 'y': (ori_err + ori_err_var).tolist(), 'ep_idx': ep_idx}
+                ori_estim_err_plots['ori_minus_err'] = {'x': unnormed_times.tolist(), 'y': (ori_err - ori_err_var).tolist(), 'ep_idx': ep_idx}
+                # pos_estim_gt_plots['pos_estim'] = {'x': unnormed_times.tolist(), 'y': pos_estim.tolist(), 'ep_idx': ep_idx}
+                # pos_estim_gt_plots['pos_gt'] = {'x': time_endpnts, 'y': [pos_gt, pos_gt], 'ep_idx': ep_idx}
+                # # std dev plots
+                # pos_estim_gt_plots['pos_plus_estim'] = {'x': unnormed_times.tolist(), 'y': (pos_estim + pos_var_avg).tolist(), 'ep_idx': ep_idx}
+                # pos_estim_gt_plots['pos_minus_estim'] = {'x': unnormed_times.tolist(), 'y': (pos_estim - pos_var_avg).tolist(), 'ep_idx': ep_idx}
                 
-                ori_estim_gt_plots['ori_estim'] = {'x': unnormed_times.tolist(), 'y': ori_estim.tolist(), 'ep_idx': ep_idx}
-                ori_estim_gt_plots['ori_gt'] = {'x': time_endpnts, 'y': [ori_gt, ori_gt], 'ep_idx': ep_idx}
-                # std dev plots
-                ori_estim_gt_plots['ori_plus_estim'] = {'x': unnormed_times.tolist(), 'y': (ori_estim + ori_var_avg).tolist(), 'ep_idx': ep_idx}
-                ori_estim_gt_plots['ori_minus_estim'] = {'x': unnormed_times.tolist(), 'y': (ori_estim - ori_var_avg).tolist(), 'ep_idx': ep_idx}
+                # ori_estim_gt_plots['ori_estim'] = {'x': unnormed_times.tolist(), 'y': ori_estim.tolist(), 'ep_idx': ep_idx}
+                # ori_estim_gt_plots['ori_gt'] = {'x': time_endpnts, 'y': [ori_gt, ori_gt], 'ep_idx': ep_idx}
+                # # std dev plots
+                # ori_estim_gt_plots['ori_plus_estim'] = {'x': unnormed_times.tolist(), 'y': (ori_estim + ori_var_avg).tolist(), 'ep_idx': ep_idx}
+                # ori_estim_gt_plots['ori_minus_estim'] = {'x': unnormed_times.tolist(), 'y': (ori_estim - ori_var_avg).tolist(), 'ep_idx': ep_idx}
 
             else:
                 #avg over the batch
@@ -142,12 +145,12 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
                 # https://wandb.ai/wandb/plots/reports/Custom-Multi-Line-Plots--VmlldzozOTMwMjU
                 xs, ys, keys = [], [], []
 
-                for i, (key, val) in enumerate(pos_estim_gt_plots.items()):
+                for i, (key, val) in enumerate(pos_estim_err_plots.items()):
                     xs.append(val['x'])
                     ys.append(val['y'])
                     keys.append(key)
 
-                title = 'plot_' + dset_prefix + '_' + 'pos_estim_gt' + '_' + ep_idx
+                title = 'plot_' + dset_prefix + '_' + 'pos_estim_err_plots' + '_' + ep_idx
                 wandb.log({title : wandb.plot.line_series(
                     xs = xs,
                     ys = ys,
@@ -156,12 +159,12 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
                 )})
 
                 xs, ys, keys = [], [], []
-                for i, (key, val) in enumerate(ori_estim_gt_plots.items()):
+                for i, (key, val) in enumerate(ori_estim_err_plots.items()):
                     xs.append(val['x'])
                     ys.append(val['y'])
                     keys.append(key)
 
-                title = 'plot_' + dset_prefix + '_' + 'ori_estim_gt' + '_' + ep_idx
+                title = 'plot_' + dset_prefix + '_' + 'ori_estim_err_plots' + '_' + ep_idx
                 wandb.log({title : wandb.plot.line_series(
                     xs = xs,
                     ys = ys,
@@ -205,7 +208,6 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
                     ## add metrics to the histogram
                     data.append([ep_idx, pos_err, ori_err, loss, log_dict['unnormed_dt']])
 
-
     # TODO histogram stuff
     # https://wandb.ai/wandb/plots/reports/Create-Your-Own-Preset-Composite-Histogram--VmlldzoyNzcyNTg
     if full_seq:
@@ -224,9 +226,7 @@ def test_metrics(dset_prefix, gaussian_model, full_seq, model, ori_rel_weight, v
         table = wandb.Table(data=data, columns=histogram_features)
         wandb.log({"custom_table_id" : table})
 
-    
     # return max_unnormed_tf
-
 
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,13 +287,22 @@ if __name__ == '__main__':
     # 'model_name': model_name
     # }
 
-    wandb.log({
+    # wandb.log({
+    #     'baseline_ori_err' : baseline_ori_err,
+    #     'baseline_pos_err' : baseline_pos_err,
+    #     'peg_radius' : peg_rad,
+    #     'radius_tol' : rad_tol,
+    #     'baseline_loss': baseline_loss
+    # })
+
+    wandb.config.update({
         'baseline_ori_err' : baseline_ori_err,
         'baseline_pos_err' : baseline_pos_err,
         'peg_radius' : peg_rad,
         'radius_tol' : rad_tol,
         'baseline_loss': baseline_loss
     })
+
 
     # model_save_path = 
     model_save_path = os.path.join(rel_dir, run.config['model_save_path'])
@@ -360,7 +369,6 @@ if __name__ == '__main__':
         train_dset_length = len(train_dset)
         wandb.config.update({'eval train dset num samples': train_dset_length})
 
-
         train_lder = DataLoader(
             train_dset,
             shuffle=False,
@@ -408,20 +416,20 @@ if __name__ == '__main__':
     # max_unnormed_dt = test_metrics(run.config['gaussian_model'], model, run.config['ori_rel_weight'], valid_lder) #model, ori_rel_weight, seq_t, val_loader
     #run for the validation set
     if run.config['eval_train']:
-        test_metrics('valid', run.config['gaussian_model'], run.config['full_seq_loss'], model, run.config['ori_rel_weight'], train_lder) #model, ori_rel_weight, seq_t, val_loader
+        test_metrics('valid', run.config['gaussian_model'], run.config['full_seq_loss'], model, run.config['ori_rel_weight'], train_lder, run) #model, ori_rel_weight, seq_t, val_loader
 
     #run for the train set
-    test_metrics('train', run.config['gaussian_model'], run.config['full_seq_loss'], model, run.config['ori_rel_weight'], valid_lder)
+    test_metrics('train', run.config['gaussian_model'], run.config['full_seq_loss'], model, run.config['ori_rel_weight'], valid_lder, run)
     
     # trained_model = training_loop(model, optimizer, run.config['num_epochs'], 
     # run.config['ori_rel_weight'], run.config['window_size'], train_lder, valid_lder, 
     # model_save_path + model_dir_name, run_name, run.config['log_interval'], run.config['chckpnt_epoch_interval']
     # )
 
-    wandb.log({
-        'baseline_ori_err' : baseline_ori_err,
-        'baseline_pos_err' : baseline_pos_err,
-        'peg_radius' : peg_rad,
-        'radius_tol' : rad_tol,
-        'baseline_loss': baseline_loss
-    })
+    # wandb.log({
+    #     'baseline_ori_err' : baseline_ori_err,
+    #     'baseline_pos_err' : baseline_pos_err,
+    #     'peg_radius' : peg_rad,
+    #     'radius_tol' : rad_tol,
+    #     'baseline_loss': baseline_loss
+    # })

@@ -48,12 +48,34 @@ def batched_pos_err(estim, target):
     # else:
     #     return torch.sqrt( ((estim[:, :3] - target[:, :3])**2).sum(1, keepdim=False) )
 
+def batched_pos_err_var(estim, target):
+    '''
+    returns distance error (in m) for each element in the mini-batch
+    output: Batch_dim vector
+    '''
+
+    assert estim.size()[0] == 1, 'batch must be one dim!'
+
+
+    if estim.dim() == 3 and target.dim() == 2:
+        target = target[:, None, :]
+
+    # make sure difference is broadcast!
+    err = estim[..., :3] - target[..., :3] # B, N, 3
+    var = estim[..., 5:8] #B, N, 3
+
+    # elementwise mult and then sum along last dim
+    err_var_inner_prod = torch.sum(err * var, dim = -1, keepdim=True).squeeze() #N
+
+    denom = (err**2).sum(-1, keepdim=True).squeeze() #N
+
+    return err_var_inner_prod / denom #N
+
 def batched_ori_err(estim, target, device):
     '''
     returns angle error (in radians) for each element in the mini-batch
     output: Batch_dim vector
     '''
-    
 
     if estim.dim() == 3: #B, N, output dim
         if target.dim() == 2:
@@ -82,6 +104,7 @@ def batched_ori_err(estim, target, device):
         # torch.isnan(your_tensor).any()
         batched_angles = torch.acos(batched_costheta) # N dim
         return batched_angles
+
     else: 
         B = estim.size()[0] # batch dimension
 
@@ -98,6 +121,45 @@ def batched_ori_err(estim, target, device):
         batched_angles = torch.acos(batched_costheta)
 
         return batched_angles
+
+def batched_ori_err_var(estim, target, device):
+    '''
+    returns distance error (in m) for each element in the mini-batch
+    output: Batch_dim vector
+    '''
+    estim = estim.squeeze() # N, 2*S
+    target = target.squeeze() # S
+    
+    N = estim.size()[0]
+    
+    estim_proj = torch.cat((estim[..., 3:5], torch.ones(N, 1).to(device)), -1) # append 1 to the projection vector
+    a, b  = target[0:2].tolist()
+    
+    denom_1 = (torch.linalg.norm(estim_proj, ord=2, dim=-1)**2)
+
+    ori_err_var = []
+    for i in range(N):
+        x, y = estim[i, 3:5].tolist()
+        var_x, var_y = estim[i, 8:].tolist()
+        denom_1_i = denom_1[i].item() 
+        denom_2 = a**2*(y**2 + 1) - 2*a*(b*x*y + x) + b**2*(x**2 + 1) - 2*b*y + x**2 + y**2
+
+        J_x_sq_var = ((-a*(y**2 + 1) + b*x*y + x)**2)*var_x
+        J_y_sq_var = ((a*x*y -b*(x**2 + 1) + y)**2)*var_y
+
+        ori_err_var.append((J_x_sq_var + J_y_sq_var)/(denom_1_i*denom_2))
+
+    # convert list to tensor on device 
+    # tensor of dim N
+    return torch.FloatTensor(ori_err_var).to(device)
+
+    # function apply_to_slices(tensor, dimension, func, ...)
+    #     for i, slice in ipairs(tensor:split(1, dimension)) do
+    #         func(slice, i, ...)
+    #     end
+    #     return tensor
+    # end
+
 def weighted_MSE_loss(estim, target, ori_weight, log_pos_ratio=False):
     ## averaged over the batch size
     
